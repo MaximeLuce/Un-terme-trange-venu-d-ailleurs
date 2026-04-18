@@ -1,0 +1,198 @@
+// ====================================================================
+//    HOMOGENEISATION 3D - FORET DE CYLINDRES - EXEMPLE 2.12
+//    SANS logiciel externe (Affichage natif via coupes 2D)
+// ====================================================================
+
+load "msh3" // Module 3D natif
+
+// --- 1. PARAMETRES ---
+int NbCell = 6;        // Nombre de cellules dans le plan XY 
+real L = 1.0;          // Demi-longueur XY
+real Lz = 1.0;         // Hauteur des cylindres
+
+real epsilon = L / NbCell;
+real rayonRatio = 0.15; 
+real aEpsilon = rayonRatio * epsilon; 
+
+// Formule "Pré-asymptotique" pour mu (Capacité exacte de la cellule finie)
+real mu = pi / ( 2.0 * (epsilon^2) * log(epsilon / aEpsilon) );
+
+cout << "--- Parametres Foret de Cylindres 3D ---" << endl;
+cout << "Nb Cylindres : " << NbCell*NbCell << endl;
+cout << "Epsilon      : " << epsilon << endl;
+cout << "Mu calcule   : " << mu << endl;
+
+// ---> LABELS <---
+int labExt = 1;      // Parois latérales extérieures
+int labCyl = 2;      // Parois des cylindres (trous)
+int labTop = 3;      // Plafond 3D
+int labBottom = 4;   // Plancher 3D
+
+// --- 2. CONSTRUCTION DU MAILLAGE 2D DE BASE ---
+// On crée d'abord la "base" trouée en 2D
+int nPointsExt = NbCell * 8;
+int nPointsHole = 15;
+
+border S1(t=-L, L){x=t; y=-L; label=labExt;}
+border S2(t=-L, L){x=L; y=t; label=labExt;}
+border S3(t=L, -L){x=t; y=L; label=labExt;}
+border S4(t=L, -L){x=-L; y=t; label=labExt;}
+
+int NbHoles = NbCell * NbCell;
+border Holes(t=0, 2*pi; i) {
+    int iy = i / NbCell;
+    int ix = i % NbCell;
+    real xc = -L + epsilon + ix * (2*epsilon);
+    real yc = -L + epsilon + iy * (2*epsilon);
+    x = xc + aEpsilon * cos(t);
+    y = yc + aEpsilon * sin(t);
+    label = labCyl;
+}
+
+int[int] nHolesVec(NbHoles);
+nHolesVec = -nPointsHole;
+
+// Maillages 2D de base
+mesh Th2Micro = buildmesh(S1(nPointsExt) + S2(nPointsExt) + S3(nPointsExt) + S4(nPointsExt) + Holes(nHolesVec));
+mesh Th2Macro = buildmesh(S1(nPointsExt) + S2(nPointsExt) + S3(nPointsExt) + S4(nPointsExt));
+
+// --- 3. EXTRUSION 3D (CREATION DES CYLINDRES) ---
+// On utilise buildlayers qui extrude le 2D en 3D (très robuste, pas besoin de TetGen)
+int nz = 15; // Nombre de couches en Z
+
+cout << "Extrusion de la foret de cylindres en 3D..." << endl;
+
+// CORRECTION : Création des tableaux de correspondance pour les labels Haut et Bas
+// On dit à FreeFEM : "Prends l'intérieur du maillage (label 0) et transforme-le"
+int[int] rup = [0, labTop];
+int[int] rdown = [0, labBottom];
+
+// CORRECTION : zbound doit contenir des réels (0.0 au lieu de 0)
+mesh3 Th3Micro = buildlayers(Th2Micro, nz, zbound=[0.0, Lz], labelup=rup, labeldown=rdown);
+mesh3 Th3Macro = buildlayers(Th2Macro, nz, zbound=[0.0, Lz], labelup=rup, labeldown=rdown);
+
+//plot(Th3Micro, wait=true, cmm="Maillage 3D : Foret de cylindres");
+
+
+// --- 4. PROBLEMES 3D ---
+fespace Vh3Micro(Th3Micro, P1);
+Vh3Micro uEps, vEps;
+
+fespace Vh3Macro(Th3Macro, P1);
+Vh3Macro uLim, vLim;
+
+// Source thermique purement 3D : Une boule de chaleur au centre du volume
+//func f = 100 * exp(-8*(x^2 + y^2 + (z-Lz/2)^2));
+func f = 1;
+
+cout << "Resolution du modele Micro (vrais cylindres)..." << endl;
+solve ProbMicro(uEps, vEps, solver=CG) = // <--- AJOUTER ICI
+    int3d(Th3Micro)(dx(uEps)*dx(vEps) + dy(uEps)*dy(vEps) + dz(uEps)*dz(vEps))
+  - int3d(Th3Micro)(f * vEps)
+  + on(labExt, labTop, labBottom, uEps=0) 
+  + on(labCyl, uEps=0);                   
+
+cout << "Resolution du modele Macro (terme etrange)..." << endl;
+solve ProbMacro(uLim, vLim, solver=CG) = // <--- AJOUTER ICI
+    int3d(Th3Macro)(dx(uLim)*dx(vLim) + dy(uLim)*dy(vLim) + dz(uLim)*dz(vLim)
+                  + mu * uLim * vLim) 
+  - int3d(Th3Macro)(f * vLim)
+  + on(labExt, labTop, labBottom, uLim=0);
+
+
+// --- 5. VISUALISATION NATIVE (ZÉRO LOGICIEL EXTERNE) ---
+// On extrait la solution 3D sur le plan 2D situé à mi-hauteur (z = Lz/2)
+cout << "Extraction des coupes 2D pour affichage..." << endl;
+
+fespace Vh2Micro(Th2Micro, P1);
+Vh2Micro uEpsCoupe;
+uEpsCoupe = uEps(x, y, Lz/2); // Magie FreeFEM : Interpolation 3D -> 2D !
+
+fespace Vh2Macro(Th2Macro, P1);
+Vh2Macro uLimCoupe;
+uLimCoupe = uLim(x, y, Lz/2);
+
+// On interpole la solution Macro sur le maillage Micro pour pouvoir faire la soustraction
+Vh2Micro uLimInterp2D = uLimCoupe; 
+Vh2Micro diffCoupe = uEpsCoupe - uLimInterp2D;
+
+// Affichage classique 2D natif
+//plot(uEps, wait=true, cmm="Maillage 3D : Foret de cylindres");
+
+//plot(uEpsCoupe, fill=1, value=1, cmm="Coupe a mi-hauteur: Micro (Vrais Cylindres)", wait=1);
+//plot(uLimCoupe, fill=1, value=1, cmm="Coupe a mi-hauteur: Macro (Homogeneisee)", wait=1);
+//plot(diffCoupe, fill=1, value=1, cmm="Difference sur la coupe", wait=1);
+
+cout << "Calcul de l'erreur..." << endl;
+
+// Calcul de l'erreur sur le volume 3D
+Vh3Micro uLimInterp3D = uLim;
+Vh3Micro diff3D = uEps - uLimInterp3D;
+real errL23D = sqrt(int3d(Th3Micro)(diff3D^2));
+real norm3D = sqrt(int3d(Th3Micro)(uEps^2));
+
+cout << "-------------------------------------" << endl;
+cout << "Erreur Relative L2 sur tout le volume 3D : " << (errL23D/norm3D)*100 << " %" << endl;
+cout << "-------------------------------------" << endl;
+
+
+
+// ====================================================================
+// --- 6. CORRECTEUR W_EPS ET NOUVELLE ERREUR 3D ---
+// ====================================================================
+
+cout << "Calcul et application du correcteur w_eps..." << endl;
+
+func real weps3D(real xx, real yy, real zz) {
+    real val = 1.0; 
+    
+    for (int i = 0; i < NbHoles; i++) {
+        int iy = i / NbCell;
+        int ix = i % NbCell;
+        
+        // Centres exacts utilisés pour la bordure 'Holes'
+        real xc = -L + epsilon + ix * (2*epsilon);
+        real yc = -L + epsilon + iy * (2*epsilon);
+        
+        // L'astuce est ici : on ne prend pas en compte zz 
+        // car on calcule la distance à l'axe vertical du cylindre !
+        real r = sqrt((xx - xc)^2 + (yy - yc)^2);
+        
+        if (r < aEpsilon) {
+            val = 0.0; // Dans le cylindre
+            break;     
+        }
+        else if (r < epsilon) {
+            // Dans la zone d'influence du cylindre
+            val = (log(r) - log(aEpsilon)) / (log(epsilon) - log(aEpsilon));
+            break;
+        }
+    }
+    return val;
+}
+
+// 1. Application du correcteur sur le maillage volumique 3D
+// uLimInterp3D a déjà été calculée dans votre code précédent
+Vh3Micro uCorrected3D = uLimInterp3D * weps3D(x, y, z);
+
+// 2. Calcul de la nouvelle différence
+Vh3Micro diffCorr3D = uEps - uCorrected3D;
+
+// 3. Calcul de la norme et de l'erreur
+real errL2Corr3D = sqrt(int3d(Th3Micro)(diffCorr3D^2));
+
+cout << "=====================================" << endl;
+cout << " BILAN DES ERREURS 3D (Cylindres)" << endl;
+cout << "=====================================" << endl;
+cout << "Erreur Relative L2 (SANS correcteur) : " << (errL23D/norm3D)*100 << " %" << endl;
+cout << "Erreur Relative L2 (AVEC correcteur) : " << (errL2Corr3D/norm3D)*100 << " %" << endl;
+cout << "=====================================" << endl;
+
+
+// --- Visualisation du bénéfice sur la coupe 2D ---
+// On applique le correcteur sur la coupe à z = Lz/2
+Vh2Micro uCorrectedCoupe = uLimInterp2D * weps3D(x, y, Lz/2);
+Vh2Micro diffCorrCoupe = uEpsCoupe - uCorrectedCoupe;
+
+plot(uCorrectedCoupe, fill=1, value=1, cmm="Coupe a mi-hauteur: Macro CORRIGEE (uLim * w_eps)", wait=1);
+plot(diffCorrCoupe, fill=1, value=1, cmm="NOUVELLE Difference (Avec correcteur)", wait=1);

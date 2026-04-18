@@ -1,0 +1,240 @@
+// --- 1. Paramètres du problème ---
+
+real L = 1;
+int NbCell = 9;
+
+real epsilon = L/NbCell;
+//real C0 = 0.1; 
+//real aEpsilon = exp(-C0/epsilon^2);
+real q=0.2;
+real aEpsilon = q*epsilon;
+real C0 = -epsilon^2*log(aEpsilon);
+
+cout << "--- Parametres ---" << endl;
+cout << "Epsilon   = " << epsilon << endl;
+cout << "NbCellules= " << NbCell << "x" << NbCell << endl;
+cout << "a^epsilon = " << aEpsilon << endl;
+cout << "C0        = " << C0 << endl;
+
+// --- 2. Paramètres de Maillage ---
+int labSquare = 1;
+int labHole = 3;
+
+// Densité
+int nout1=50;
+int nout=100;
+int nin = nout*aEpsilon*4;
+
+
+cout << "--- Densite de trous ---" << endl;
+cout << "Nin   = " << nin << endl;
+cout << "Nout   = " << nout << endl;
+
+
+// --- 3. Définition des Frontières ---
+
+// 3.1 Le Carré extérieur (S'adapte automatiquement à NbCell)
+// Le domaine va de -L à +L (puisque la maille fait 2*epsilon)
+border Square1(t=-L, L) { x = t; y = -L; label = labSquare; }
+border Square2(t=-L, L) { x = L; y = t; label = labSquare; }
+border Square3(t=L, -L) { x = t; y = L; label = labSquare; }
+border Square4(t=L, -L) { x = -L; y = t; label = labSquare; }
+
+// 3.2 Les Trous (Généralisés) [cite: 1]
+// Syntaxe : border Nom(t=0, 2*pi; i) 
+// 'i' est l'indice du trou, allant de 0 à (NbTotal - 1)
+int NbTotalHoles = NbCell * NbCell;
+
+border Holes(t=0, 2*pi; i) {
+    // On convertit l'indice linéaire 'i' en indices de grille (ix, iy)
+    int iy = i / NbCell;
+    int ix = i % NbCell;
+    
+    // Calcul du centre du trou (xc, yc)
+    // On centre le réseau autour de (0,0)
+    // Le pas entre deux trous est 2*epsilon
+    real xc = (ix - (NbCell-1)/2.0) * 2 * epsilon;
+    real yc = (iy - (NbCell-1)/2.0) * 2 * epsilon;
+    
+    x = xc + aEpsilon * cos(t);
+    y = yc + aEpsilon * sin(t);
+    label = labHole;
+}
+
+// --- 4. Construction du Maillage ---
+
+// Astuce : Pour mailler une frontière paramétrée 'Holes', 
+// il faut passer un vecteur d'entiers définissant la discrétisation pour chaque 'i'.
+int[int] nHoles(NbTotalHoles);
+nHoles = -nin; // On met -nin pour tous les trous (orientation horaire pour les trous)
+
+mesh Th = buildmesh(
+    Square1(nout1) + Square2(nout1) + Square3(nout1) + Square4(nout1) //+
+    //Holes(nHoles) // FreeFEM comprend qu'il doit générer tous les trous définis par le vecteur
+);
+
+mesh Th1 = buildmesh(
+    Square1(nout) + Square2(nout) + Square3(nout) + Square4(nout) +
+    Holes(nHoles) // FreeFEM comprend qu'il doit générer tous les trous définis par le vecteur
+);
+
+
+
+// Visualisation du maillage pour vérifier
+//plot(Th, wait=true, cmm="Maillage avec " + NbTotalHoles + " trous");
+
+plot(Th, cmm="Maillage sans trous", wait=true);
+plot(Th1, cmm="Maillage avec trous", wait=true);
+
+// --- 5. Espaces et Variables (Le reste est identique) ---
+fespace Vh(Th, P1);
+Vh u2, v2;
+//real mu = (pi) / (2 * C0+log(epsilon)*epsilon^2);
+real mu = (pi) / (2 * C0);
+
+
+cout << "mu   = " << mu << endl;
+
+
+//func f = (x^2+y^2 < (L/1.5)^2) ? 10 : 0; // Exemple de source centrée (optionnel, j'ai changé f pour éviter les débordements exponentiels si L est grand)
+// Note : J'ai changé 'f' car votre ancienne f = exp(-(x^2+y^2)) devient très petite si on augmente la taille du domaine.
+// Remettez votre f d'origine si vous préférez :
+//func fOriginal =  exp( - (x + y)^2 );
+func fOriginal =  1;
+
+
+fespace Vh1(Th1, P1);
+Vh1 u1, v1;
+
+
+
+// --- 6. Résolutions ---
+
+// Problème 1 : Poisson avec trous
+solve Poisson(u1, v1) = 
+    int2d(Th1)( dx(u1)*dx(v1) + dy(u1)*dy(v1) ) 
+  - int2d(Th1)( fOriginal * v1 )
+  + on(labHole, u1=0)
+  + on(labSquare, u1=0); 
+
+// Problème 2 : Homogénéisé
+solve Helmholtz(u2, v2) = 
+    int2d(Th)( dx(u2)*dx(v2) + dy(u2)*dy(v2) + mu*u2*v2 ) 
+  - int2d(Th)( fOriginal * v2 )
+  + on(labSquare, u2=0); // CL Dirichlet homogène sur le bord extérieur
+
+
+
+Vh u1interp=u1;
+
+
+
+int NbTotalHoles3=3;
+
+int[int] nHoles3(NbTotalHoles);
+nHoles3 = nin; // On met -nin pour tous les trous (orientation horaire pour les trous)
+
+mesh Th3 = buildmesh(
+    Square1(nout) + Square2(nout) + Square3(nout) + Square4(nout) +
+    Holes(nHoles3) // FreeFEM comprend qu'il doit générer tous les trous définis par le vecteur
+);
+
+fespace Vh3(Th3,P1);
+Vh3 u3, v3;
+
+// Problème 2 : Homogénéisé
+solve Helmholtz3(u3, v3) = 
+    int2d(Th3)( dx(u3)*dx(v3) + dy(u3)*dy(v3) + mu*u3*v3 ) 
+  - int2d(Th3)( fOriginal * v3 )
+  + on(labSquare, u3=0); // CL Dirichlet homogène sur le bord extérieur
+
+Vh3 u3interp=u1;
+
+Vh3 diff3 = u3interp - u3;
+real L2error3 = sqrt( int2d(Th3)( (diff3)^2 ) );
+real L2normU13 = sqrt( int2d(Th3)( (u3interp)^2 ) );
+
+plot(Th3, cmm="Maillage sans trous", wait=true);
+plot(u3interp, value=true, fill=true, cmm="u1interp", wait=true);
+
+cout << "-------------------------------------" << endl;
+cout << "Erreur relative L2 = " << (L2error3 / L2normU13)*100 << " %" << endl;
+cout << "-------------------------------------" << endl;
+
+
+
+
+// --- Création de la fonction w_eps ---
+
+func real weps(real xx, real yy) {
+    real val = 1.0; // Par défaut, on est hors des zones d'influence
+    
+    // On itère sur la grille des centres (même logique que pour les bordures)
+    for (int i = 0; i < NbTotalHoles; i++) {
+        int iy = i / NbCell;
+        int ix = i % NbCell;
+        
+        real xc = (ix - (NbCell-1)/2.0) * 2.0 * epsilon;
+        real yc = (iy - (NbCell-1)/2.0) * 2.0 * epsilon;
+        
+        real r = sqrt((xx - xc)^2 + (yy - yc)^2);
+        
+        if (r < aEpsilon) {
+            val = 0.0; // Dans le trou
+            break;     // On a trouvé le trou, on sort de la boucle
+        }
+        else if (r < epsilon) {
+            val = (log(r) - log(aEpsilon)) / (log(epsilon) - log(aEpsilon));
+            break;
+        }
+    }
+    return val;
+}
+
+Vh3 wPlot = weps(x, y);
+plot(wPlot, fill=true, value=true, cmm="Correcteur w_epsilon", wait=true);
+
+// Nouvelle fonction pour comparer
+
+// On crée le produit u_homogénéisé * correcteur
+Vh3 uCorrected = u3 * weps(x, y);
+
+// Calcul de la différence
+Vh3 diffCorr = u3interp - uCorrected;
+
+// Calcul des normes L2
+real L2errCorr = sqrt( int2d(Th3)( (diffCorr)^2 ) );
+real L2normExact = sqrt( int2d(Th3)( (u3interp)^2 ) );
+
+real erreurRelative = (L2errCorr / L2normExact) * 100;
+
+cout << "--- Comparaison avec Correcteur ---" << endl;
+cout << "Erreur relative L2 (avec w_eps) = " << erreurRelative << " %" << endl;
+cout << "-----------------------------------" << endl;
+
+
+
+
+
+// Visualisation pour vérifier la "gueule" de la solution corrigée
+plot(uCorrected, fill=true, value=true, cmm="Produit u3 * w_eps", wait=true);
+
+// --- 7. Résultats ---
+cout << "Max u1 = " << u1[].max << endl;
+cout << "Max u2 = " << u2[].max << endl;
+
+Vh diff = u1interp - u2;
+real L2error = sqrt( int2d(Th)( (diff)^2 ) );
+real L2normU1 = sqrt( int2d(Th)( (u1interp)^2 ) );
+
+plot(u1interp, value=true, fill=true, cmm="u1interp", wait=true);
+
+plot(u1, value=true, fill=true, cmm="U_epsilon (Poisson)", wait=true);
+plot(u2, value=true, fill=true, cmm="U_limite (Helmholtz)", wait=true);
+plot(diff, value=true, fill=true, cmm="Difference", wait=true);
+plot(Th, cmm="Maillage sans trous", wait=true);
+plot(Th1, cmm="Maillage avec trous", wait=true);
+
+cout << "-------------------------------------" << endl;
+cout << "Erreur relative L2 = " << (L2error / L2normU1)*100 << " %" << endl;
+cout << "-------------------------------------" << endl;

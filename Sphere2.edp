@@ -1,0 +1,159 @@
+// ====================================================================
+//    HOMOGENEISATION 3D - SPHERES (PÉNALISATION SUR GRILLE DENSE)
+//    L'approche la plus robuste pour la 3D
+// ====================================================================
+
+load "msh3"
+
+// --- 1. PARAMETRES ---
+int NbCell = 3;        
+real L = 1.0;          
+real epsilon = L / NbCell;
+
+// On prend des sphères bien visibles pour que la grille les capte
+real rayonRatio = 0.3; 
+real aEpsilon = rayonRatio * epsilon; 
+
+// Formule de mu asymptotique pour la 3D (Capacité sphérique sur volume cellule)
+real mu = (pi * aEpsilon) / (2.0 * epsilon^3);
+
+cout << "--- Parametres ---" << endl;
+cout << "Epsilon      : " << epsilon << endl;
+cout << "Rayon aEps   : " << aEpsilon << endl;
+cout << "Mu calcule   : " << mu << endl;
+
+// --- 2. MAILLAGE 3D REGULIER (ZÉRO TETGEN) ---
+// On crée une grille très fine (36x36x36). 
+// Chaque "voxel" sera plus petit que la sphère, assurant une forme correcte.
+int nBox = 36; 
+
+// On unifie tous les bords 2D sous le label 1
+int[int] labBorders = [1,1, 2,1, 3,1, 4,1];
+mesh Th2Box = square(nBox, nBox, [2*L*x-L, 2*L*y-L], label=labBorders);
+
+cout << "Generation de la grille 3D dense..." << endl;
+// Extrusion pour faire un cube parfait. Les faces Z- et Z+ prennent le label 1.
+int[int] rZ = [0, 1];
+mesh3 Th3 = buildlayers(Th2Box, nBox, zbound=[-L, L], labelup=rZ, labeldown=rZ);
+
+// --- 3. DEFINITION DES TROUS EXACTE (P0) ---
+fespace Vh0(Th3, P0);
+Vh0 Chi = 0.0; 
+
+cout << "Echantillonnage des spheres..." << endl;
+for(int i=0; i<NbCell; i++){
+    for(int j=0; j<NbCell; j++){
+        for(int k=0; k<NbCell; k++){
+            real xc = -L + epsilon + i*(2*epsilon);
+            real yc = -L + epsilon + j*(2*epsilon);
+            real zc = -L + epsilon + k*(2*epsilon);
+            Chi = Chi + ( ((x-xc)^2 + (y-yc)^2 + (z-zc)^2 <= aEpsilon^2) ? 1.0 : 0.0 );
+        }
+    }
+}
+
+// --- 4. RESOLUTION ---
+fespace Vh3(Th3, P1);
+Vh3 uEps, vEps;
+Vh3 uLim, vLim;
+
+func f = 100 * exp(-5*(x^2 + y^2 + z^2));
+
+// On remet solver=CG car la grille est énorme (> 50 000 noeuds) mais parfaitement régulière !
+cout << "Resolution Micro (CG)..." << endl;
+solve ProbMicro(uEps, vEps, solver=CG) =
+    int3d(Th3)(dx(uEps)*dx(vEps) + dy(uEps)*dy(vEps) + dz(uEps)*dz(vEps))
+  + int3d(Th3)(1e7 * Chi * uEps * vEps) // Mur de penalisation
+  - int3d(Th3)(f * vEps)
+  + on(1, uEps=0); // Label 1 couvre toute la boite
+
+cout << "Resolution Macro (CG)..." << endl;
+solve ProbMacro(uLim, vLim, solver=CG) =
+    int3d(Th3)(dx(uLim)*dx(vLim) + dy(uLim)*dy(vLim) + dz(uLim)*dz(vLim))
+  + int3d(Th3)(mu * uLim * vLim) 
+  - int3d(Th3)(f * vLim)
+  + on(1, uLim=0);
+
+
+// --- 5. ANALYSE DES RESULTATS ---
+cout << "=====================================" << endl;
+cout << "Max uEps (Avec vrais trous) : " << uEps[].max << endl;
+cout << "Max uLim (Modele Lisse)     : " << uLim[].max << endl;
+
+real errL2 = sqrt(int3d(Th3)( (1.0 - Chi) * (uEps - uLim)^2 ));
+real normRef = sqrt(int3d(Th3)( (1.0 - Chi) * (uEps)^2 ));
+
+cout << "-------------------------------------" << endl;
+cout << "Erreur Relative L2 Volume 3D : " << (errL2/normRef)*100 << " %" << endl;
+cout << "=====================================" << endl;
+
+// Visualisation 2D à mi-hauteur
+mesh Th2Slice = square(nBox, nBox, [2*L*x-L, 2*L*y-L]);
+fespace Vh2(Th2Slice, P1);
+
+Vh2 uEpsCoupe = uEps(x, y, 0.0);
+Vh2 uLimCoupe = uLim(x, y, 0.0);
+Vh2 diffCoupe = uEpsCoupe - uLimCoupe;
+
+//plot(uEpsCoupe, fill=1, value=1, cmm="Coupe a Z=0 : Micro (Trous penalises)", wait=1);
+//plot(uLimCoupe, fill=1, value=1, cmm="Coupe a Z=0 : Macro", wait=1);
+//plot(diffCoupe, fill=1, value=1, cmm="Difference", wait=1);
+
+// ====================================================================
+// --- 6. CORRECTEUR W_EPS SPHÉRIQUE ET NOUVELLE ERREUR 3D ---
+// ====================================================================
+
+cout << "Calcul et application du correcteur spherique w_eps..." << endl;
+
+int NbTotalSpheres = NbCell * NbCell * NbCell;
+
+func real wepsSphere(real xx, real yy, real zz) {
+    real val = 1.0; 
+    
+    for (int idx = 0; idx < NbTotalSpheres; idx++) {
+        // Décodage de l'indice 1D vers 3D (i, j, k)
+        int k = idx / (NbCell * NbCell);
+        int reste = idx % (NbCell * NbCell);
+        int j = reste / NbCell;
+        int i = reste % NbCell;
+        
+        real xc = -L + epsilon + i*(2*epsilon);
+        real yc = -L + epsilon + j*(2*epsilon);
+        real zc = -L + epsilon + k*(2*epsilon);
+        
+        // Vraie distance 3D
+        real r = sqrt((xx - xc)^2 + (yy - yc)^2 + (zz - zc)^2);
+        
+        if (r < aEpsilon) {
+            val = 0.0; // Dans la sphère
+            break;
+        }
+        else if (r < epsilon) {
+            // Formule 3D (Laplacien sphérique en 1/r)
+            val = (1.0/aEpsilon - 1.0/r) / (1.0/aEpsilon - 1.0/epsilon);
+            break;
+        }
+    }
+    return val;
+}
+
+// 1. Application du correcteur sur le champ macro
+Vh3 uCorrected3D = uLim * wepsSphere(x, y, z);
+
+// 2. Calcul de l'erreur avec le correcteur
+// Note : Le masque (1.0 - Chi) est conservé pour être rigoureux vis-à-vis du domaine
+real errL2Corr = sqrt(int3d(Th3)( (1.0 - Chi) * (uEps - uCorrected3D)^2 ));
+
+cout << "=====================================" << endl;
+cout << " BILAN DES ERREURS 3D (Spheres)" << endl; // <--- Plus d'accent ici
+cout << "=====================================" << endl;
+cout << "Erreur Relative L2 (SANS correcteur) : " << (errL2/normRef)*100 << " %" << endl;
+cout << "Erreur Relative L2 (AVEC correcteur) : " << (errL2Corr/normRef)*100 << " %" << endl;
+cout << "=====================================" << endl;
+
+// --- Visualisation du benefice sur la coupe Z=0 ---
+Vh2 uCorrectedCoupe = uLimCoupe * wepsSphere(x, y, 0.0);
+Vh2 diffCorrCoupe = uEpsCoupe - uCorrectedCoupe;
+
+plot(uCorrectedCoupe, fill=1, value=1, cmm="Coupe Z=0: Macro CORRIGEE", wait=1);
+plot(diffCorrCoupe, fill=1, value=1, cmm="NOUVELLE Difference", wait=1);
