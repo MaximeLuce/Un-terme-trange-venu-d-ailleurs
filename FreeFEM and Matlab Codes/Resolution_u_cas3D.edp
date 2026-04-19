@@ -1,0 +1,97 @@
+load "msh3" // Requis pour la 3D
+
+real epsilon = 0.98401;
+real aEpsilon =  0.13394;
+
+real C0 = -epsilon^2*log(aEpsilon); 
+
+// bEpsilon < epsilon pour ne pas toucher les bords du carre
+real bEpsilon = epsilon * 0.995; 
+
+cout << "--- Parametres ---" << endl;
+cout << "Epsilon   = " << epsilon << endl;
+cout << "a^epsilon = " << aEpsilon << endl;
+cout << "b^epsilon = " << bEpsilon << endl;
+cout << "C0 = " << C0 << endl;
+
+// labels
+int labSquare = 1;      // Bord du cube P^epsilon
+int labCircleOut = 2;   // Bord du cercle B^epsilon
+int labHole = 3;        // Bord du trou T^epsilon
+
+// densite du maillage 2D de base
+int nin = 50;
+int nout=nin*epsilon/aEpsilon;
+
+// definition des frontieres 2D
+
+// Carre central
+border Square1(t=-3*epsilon, 3*epsilon) { x = t; y = -3*epsilon; label = labSquare; }
+border Square2(t=-3*epsilon, 3*epsilon) { x = 3*epsilon; y = t; label = labSquare; }
+border Square3(t=3*epsilon, -3*epsilon) { x = t; y = 3*epsilon; label = labSquare; }
+border Square4(t=3*epsilon, -3*epsilon) { x = -3*epsilon; y = t; label = labSquare; }
+
+// les trous (
+border CircleIn00(t=0, 2*pi)  { x = aEpsilon*cos(t); y = aEpsilon*sin(t); label = labHole; }
+border CircleIn10(t=0, 2*pi)  { x = 2*epsilon+aEpsilon*cos(t); y = aEpsilon*sin(t); label = labHole; }
+border CircleIn01(t=0, 2*pi)  { x = aEpsilon*cos(t); y = 2*epsilon+aEpsilon*sin(t); label = labHole; }
+border CircleIn11(t=0, 2*pi)  { x = 2*epsilon+aEpsilon*cos(t); y = 2*epsilon+aEpsilon*sin(t); label = labHole; }
+border CircleInm10(t=0, 2*pi) { x = -2*epsilon+aEpsilon*cos(t); y = aEpsilon*sin(t); label = labHole; }
+border CircleInm01(t=0, 2*pi) { x = aEpsilon*cos(t); y = -2*epsilon+aEpsilon*sin(t); label = labHole; }
+border CircleInm1m1(t=0, 2*pi){ x = -2*epsilon+aEpsilon*cos(t); y = -2*epsilon+aEpsilon*sin(t); label = labHole; }
+border CircleInm11(t=0, 2*pi) { x = -2*epsilon+aEpsilon*cos(t); y = 2*epsilon+aEpsilon*sin(t); label = labHole; }
+border CircleIn1m1(t=0, 2*pi) { x = 2*epsilon+aEpsilon*cos(t); y = -2*epsilon+aEpsilon*sin(t); label = labHole; }
+
+//maillage 2D de base
+mesh Th = buildmesh(
+    Square1(nout) + Square2(nout) + Square3(nout) + Square4(nout) + 
+    CircleIn10(-nin) + CircleIn01(-nin) + CircleIn11(-nin) +
+    CircleInm10(-nin) + CircleInm01(-nin) + CircleInm1m1(-nin) +
+    CircleInm11(-nin) + CircleIn1m1(-nin) + CircleIn00(-nin)
+);
+
+// maillage 3D
+int nz = 20; // Nombre de couches selon l'axe Z
+real zMin = -3*epsilon; // Base des cylindres
+real zMax = 3*epsilon;  // Sommet des cylindres
+
+mesh3 Th3 = buildlayers(Th, nz, zbound=[zMin, zMax]);
+
+plot(Th3, wait=true, cmm="Maillage 3D : Foret de cylindres");
+
+fespace Vh3(Th3, P1); 
+Vh3 u1, u2, v;
+
+real mu = pi / (2 * C0); 
+
+func f = (x^2 + y^2 + z^2) * exp( - (x^2 + y^2 + z^2) );
+
+solve Poisson3D(u1, v) = 
+    int3d(Th3)( dx(u1)*dx(v) + dy(u1)*dy(v) + dz(u1)*dz(v) ) 
+  - int3d(Th3)( f * v )
+  + on(labHole, u1=0); 
+
+solve Helmholtz3D(u2, v) = 
+    int3d(Th3)( dx(u2)*dx(v) + dy(u2)*dy(v) + dz(u2)*dz(v) + mu*u2*v )
+  - int3d(Th3)( f * v )
+  + on(labSquare, u2=0);
+
+cout << "Max u1 (Poisson 3D) = " << u1[].max << endl;
+cout << "Max u2 (Avec mu en 3D) = " << u2[].max << endl;
+
+Vh3 diff = u1 - u2;
+
+real L2error = sqrt( int3d(Th3)( (diff)^2 ) );
+real normu1 = sqrt( int3d(Th3)( (u1)^2 ) );
+real normu2 = sqrt( int3d(Th3)( (u2)^2 ) );
+
+cout << "-------------------------------------" << endl;
+cout << "Norme L2 de u1        = " << normu1 << endl;
+cout << "Norme L2 de (u1 - u2) = " << L2error << endl;
+cout << "Erreur relative       = " << (L2error / normu1)*100 << " %" << endl;
+cout << "Erreur relative bis   = " << ((normu1-normu2) / normu1)*100 << " %" << endl;
+cout << "-------------------------------------" << endl;
+
+// Affichage 
+//plot(u1, fill=true, value=true, cmm="Coupe de la Solution u1 (3D)", wait=true);
+ plot(Th3, wait=true, cmm="Maillage 3D : Foret de cylindres");

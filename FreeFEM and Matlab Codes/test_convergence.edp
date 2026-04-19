@@ -1,0 +1,93 @@
+real epsilon = 0.97949; 
+real aEpsilon = 0.11038;
+
+//real C0 = 1;
+real C0 = -epsilon^2*log(aEpsilon); 
+
+// bEpsilon < epsilon  pour ne pas toucher les bords du carré
+real bEpsilon = epsilon * 1; 
+
+cout << "--- Parametres ---" << endl;
+cout << "Epsilon   = " << epsilon << endl;
+cout << "a^epsilon = " << aEpsilon << endl;
+cout << "b^epsilon = " << bEpsilon << endl;
+cout << "C0 = " << C0 << endl;
+
+// labels
+int labSquare = 1;      // Bord du cube P^epsilon
+int labCircleOut = 2;   // Bord du cercle B^epsilon
+int labHole = 3;        // Bord du trou T^epsilon
+
+
+{   
+    ofstream fData("donnees_simulation_maillage_bon_test.txt"); 
+    fData << "n ; Energie ; MuNum ; MuTh ; Erreur(%) ; MuTh2 ; Erreur2(%) ; MuTh3 ; Erreur3(%)" << endl;
+}
+
+//for (int nin = 500; nin < 700; nin+=10) {
+   int nin = 20; 
+
+    
+    
+    int nout=nin*epsilon/aEpsilon;
+
+    border CircleOut(t=0, 2*pi) { x = bEpsilon*cos(t); y = bEpsilon*sin(t); label = labCircleOut; }
+    border CircleIn(t=0, 2*pi)  { x = aEpsilon*cos(t); y = aEpsilon*sin(t); label = labHole; }
+
+    mesh Th = buildmesh(
+        CircleOut(nout) +   
+        CircleIn(-nin) 
+    );
+
+    fespace Vh(Th, P2); 
+    Vh w, v;
+
+    solve ProbW(w, v) = 
+        int2d(Th)( dx(w)*dx(v) + dy(w)*dy(v) ) 
+        + on(labHole, w = 0) 
+        + on(labCircleOut, w = 1);
+   
+    
+    real Energy = int2d(Th)(dx(w)^2 + dy(w)^2);
+    real VolumeCellule = (2*epsilon)^2; 
+    real MuNum = Energy / VolumeCellule;
+    real MuTh = (pi/2)*1/C0 ;
+
+    func r = sqrt(x^2 + y^2);
+    func wFormula = (log(aEpsilon) - log(r)) / (log(aEpsilon) - log(epsilon));
+    Vh wTh = wFormula; 
+
+    real MuTh2 = int2d(Th)( (dx(wTh)^2 + dy(wTh)^2) ) / VolumeCellule;
+    
+    real I = (2*pi)/(C0/epsilon^2 + log(epsilon));
+    real muTheorique3 = I/((2*epsilon)^2);
+
+    
+    // Fichier Detaillé
+    ofstream fRes("resultats_simulation_maillage_bon_test.txt", append);
+    fRes << "------------------------------------------------" << endl;
+    fRes << "Resultats : densite nin = " << nin << endl;
+    fRes << "Energie calculee (int |grad w|^2) : " << Energy << endl;
+    fRes << "Mu Numerique (Energie/Vol)       : " << MuNum << endl;
+    fRes << "Mu Theorique pi/(2*C0)         : " << MuTh << endl;
+    fRes << "Erreur relative Num/Theo                  : " << abs(MuNum - MuTh)/MuTh * 100 << " %" << endl;
+    fRes << "MuTh2 (Integrale wTh)  = " << MuTh2 << endl;
+    fRes << "Erreur relative Num/Theo2                 : " << abs(MuNum - MuTh2)/MuTh2 * 100 << " %" << endl;
+    fRes << "MuTh3 : " << muTheorique3 << endl;
+    fRes << "Erreur relative Num/Theo3                 : " << abs(MuNum - muTheorique3)/muTheorique3 * 100 << " %" << endl;
+    fRes << "------------------------------------------------" << endl;
+
+    // Fichier Excel
+    ofstream fData("donnees_simulation_maillage_bon_test.txt", append);
+    fData << nin << " ; " 
+      << Energy << " ; " 
+      << MuNum << " ; " 
+      << MuTh << " ; " 
+      << abs(MuNum - MuTh)/MuTh * 100.0 << " ; " 
+      << MuTh2 << " ; " 
+      << abs(MuNum - MuTh2)/MuTh2 * 100.0 << " ; "
+      << muTheorique3 << " ; "
+      << abs(MuNum - muTheorique3)/muTheorique3 * 100.0 
+      << endl;
+    plot(Th,wait=true);
+//}
